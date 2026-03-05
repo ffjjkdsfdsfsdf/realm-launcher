@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import TerminalLog, { type LogEntry } from "./TerminalLog";
 
 const CrashPanel = () => {
@@ -7,6 +7,7 @@ const CrashPanel = () => {
   const [timeDelay, setTimeDelay] = useState("1000");
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const abortRef = useRef(false);
 
   const getTimestamp = () => {
     const now = new Date();
@@ -17,31 +18,45 @@ const CrashPanel = () => {
     setLogs((prev) => [...prev, { text, type, timestamp: getTimestamp() }]);
   }, []);
 
+  const handleStop = () => {
+    abortRef.current = true;
+  };
+
   const handleCrash = async () => {
     if (!realmId.trim()) {
       addLog("ERROR: Realm ID is required!", "error");
       return;
     }
 
+    abortRef.current = false;
     setIsRunning(true);
     setLogs([]);
 
     addLog("Initializing crash sequence...", "info");
     await delay(500);
+    if (abortRef.current) return stopSequence();
+
     addLog(`Connecting to Realm "${realmId}"...`, "info");
     await delay(800);
+    if (abortRef.current) return stopSequence();
+
     addLog(`Joined Realm "${realmId}"`, "success");
     await delay(300);
+    if (abortRef.current) return stopSequence();
+
     addLog(`Crash loop: ${crashLoop} iterations`, "info");
     addLog(`Time delay: ${timeDelay}ms`, "info");
     await delay(400);
+    if (abortRef.current) return stopSequence();
 
     const loops = parseInt(crashLoop) || 10;
     const delayMs = parseInt(timeDelay) || 1000;
 
     for (let i = 1; i <= loops; i++) {
+      if (abortRef.current) return stopSequence();
       addLog(`Executing crash loop ${i}/${loops}...`, "warn");
       await delay(delayMs / 3);
+      if (abortRef.current) return stopSequence();
       addLog(`Payload delivered [loop ${i}]`, "success");
       if (i < loops) await delay(delayMs / 2);
     }
@@ -52,8 +67,14 @@ const CrashPanel = () => {
     setIsRunning(false);
   };
 
+  const stopSequence = () => {
+    addLog("⚠ Crash sequence aborted by user.", "error");
+    setIsRunning(false);
+    abortRef.current = false;
+  };
+
   return (
-    <div className="flex flex-col lg:flex-row gap-4 w-full max-w-5xl mx-auto p-4 h-[calc(100vh-5rem)]">
+    <div className="flex flex-col lg:flex-row gap-4 w-full max-w-5xl mx-auto p-4 h-[calc(100vh-8rem)]">
       {/* Controls */}
       <div className="flex flex-col gap-4 w-full lg:w-80 shrink-0">
         <div className="rounded border border-border bg-card p-5 space-y-4">
@@ -65,17 +86,27 @@ const CrashPanel = () => {
           <FieldInput label="Crash Loop" value={crashLoop} onChange={setCrashLoop} placeholder="10" />
           <FieldInput label="Time Delay (ms)" value={timeDelay} onChange={setTimeDelay} placeholder="1000" />
 
-          <button
-            onClick={handleCrash}
-            disabled={isRunning}
-            className={`w-full py-2.5 rounded font-display text-sm tracking-widest uppercase transition-all duration-200 ${
-              isRunning
-                ? "bg-secondary text-muted-foreground cursor-not-allowed"
-                : "bg-destructive text-destructive-foreground glow-destructive hover:brightness-110 active:scale-[0.98]"
-            }`}
-          >
-            {isRunning ? "Running..." : "Crash"}
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={handleCrash}
+              disabled={isRunning}
+              className={`flex-1 py-2.5 rounded font-display text-sm tracking-widest uppercase transition-all duration-200 ${
+                isRunning
+                  ? "bg-secondary text-muted-foreground cursor-not-allowed"
+                  : "bg-destructive text-destructive-foreground glow-destructive hover:brightness-110 active:scale-[0.98]"
+              }`}
+            >
+              {isRunning ? "Running..." : "Crash"}
+            </button>
+            {isRunning && (
+              <button
+                onClick={handleStop}
+                className="px-4 py-2.5 rounded font-display text-sm tracking-widest uppercase bg-accent text-accent-foreground hover:brightness-110 active:scale-[0.98] transition-all duration-200"
+              >
+                Stop
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
