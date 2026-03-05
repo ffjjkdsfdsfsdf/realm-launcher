@@ -19,6 +19,7 @@ export type Database = {
           created_at: string
           id: string
           is_active: boolean
+          key_type: string
           key_value: string
           label: string | null
           used_at: string | null
@@ -28,6 +29,7 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          key_type?: string
           key_value: string
           label?: string | null
           used_at?: string | null
@@ -37,6 +39,7 @@ export type Database = {
           created_at?: string
           id?: string
           is_active?: boolean
+          key_type?: string
           key_value?: string
           label?: string | null
           used_at?: string | null
