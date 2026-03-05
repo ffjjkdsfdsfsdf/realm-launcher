@@ -1,11 +1,15 @@
 import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
+type KeyType = "user" | "admin";
+
 const AdminPanel = () => {
   const [keys, setKeys] = useState<any[]>([]);
   const [label, setLabel] = useState("");
+  const [keyType, setKeyType] = useState<KeyType>("user");
   const [generating, setGenerating] = useState(false);
   const [generatedKey, setGeneratedKey] = useState("");
+  const [error, setError] = useState("");
 
   const fetchKeys = useCallback(async () => {
     const { data } = await supabase
@@ -30,18 +34,29 @@ const AdminPanel = () => {
 
   const handleGenerate = async () => {
     setGenerating(true);
-    const newKey = generateKey();
-    
-    const { error } = await supabase
-      .from("access_keys")
-      .insert({ key_value: newKey, label: label.trim() || null });
+    setError("");
+    try {
+      const newKey = generateKey();
+      const { error: dbError } = await supabase
+        .from("access_keys")
+        .insert({
+          key_value: newKey,
+          label: label.trim() || null,
+          key_type: keyType,
+        });
 
-    if (!error) {
-      setGeneratedKey(newKey);
-      setLabel("");
-      fetchKeys();
+      if (dbError) {
+        setError(dbError.message);
+      } else {
+        setGeneratedKey(newKey);
+        setLabel("");
+        fetchKeys();
+      }
+    } catch (e: any) {
+      setError(e.message || "Unexpected error");
+    } finally {
+      setGenerating(false);
     }
-    setGenerating(false);
   };
 
   const handleToggleKey = async (id: string, currentActive: boolean) => {
@@ -68,7 +83,7 @@ const AdminPanel = () => {
           Admin — Key Generator
         </h2>
 
-        <div className="flex gap-3">
+        <div className="flex flex-col sm:flex-row gap-3">
           <div className="flex-1 space-y-1.5">
             <label className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
               Label (optional)
@@ -81,16 +96,51 @@ const AdminPanel = () => {
               className="w-full bg-input border border-border rounded px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring transition-all"
             />
           </div>
+
+          <div className="space-y-1.5">
+            <label className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
+              Key Type
+            </label>
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setKeyType("user")}
+                className={`px-3 py-2 rounded text-xs font-mono uppercase tracking-wider transition-all ${
+                  keyType === "user"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                User
+              </button>
+              <button
+                type="button"
+                onClick={() => setKeyType("admin")}
+                className={`px-3 py-2 rounded text-xs font-mono uppercase tracking-wider transition-all ${
+                  keyType === "admin"
+                    ? "bg-destructive text-destructive-foreground"
+                    : "bg-secondary text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Admin
+              </button>
+            </div>
+          </div>
+
           <div className="flex items-end">
             <button
               onClick={handleGenerate}
               disabled={generating}
               className="px-4 py-2 rounded font-display text-xs tracking-widest uppercase bg-primary text-primary-foreground glow-primary hover:brightness-110 active:scale-[0.98] transition-all disabled:opacity-50"
             >
-              Generate Key
+              {generating ? "..." : "Generate Key"}
             </button>
           </div>
         </div>
+
+        {error && (
+          <p className="text-xs font-mono text-destructive">{error}</p>
+        )}
 
         {generatedKey && (
           <div className="bg-secondary border border-border rounded p-3 flex items-center gap-3">
@@ -120,6 +170,13 @@ const AdminPanel = () => {
                 className="flex items-center gap-3 bg-secondary rounded px-3 py-2 text-xs font-mono"
               >
                 <code className="text-foreground flex-1 break-all">{k.key_value}</code>
+                <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wider ${
+                  k.key_type === "admin"
+                    ? "bg-destructive/20 text-destructive"
+                    : "bg-primary/20 text-primary"
+                }`}>
+                  {k.key_type || "user"}
+                </span>
                 {k.label && (
                   <span className="text-muted-foreground shrink-0">{k.label}</span>
                 )}
