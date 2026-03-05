@@ -1,13 +1,17 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import TerminalLog, { type LogEntry } from "./TerminalLog";
 
+const BACKEND_URL_KEY = "crash-tool-backend-url";
+
 const CrashPanel = () => {
-  const [realmId, setRealmId] = useState("");
+  const [realmInput, setRealmInput] = useState("");
   const [crashLoop, setCrashLoop] = useState("10");
-  const [timeDelay, setTimeDelay] = useState("1000");
+  const [backendUrl, setBackendUrl] = useState(() => localStorage.getItem(BACKEND_URL_KEY) || "http://localhost:3001");
+  const [showSettings, setShowSettings] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
+  const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const abortRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const getTimestamp = () => {
     const now = new Date();
@@ -18,59 +22,106 @@ const CrashPanel = () => {
     setLogs((prev) => [...prev, { text, type, timestamp: getTimestamp() }]);
   }, []);
 
+  // Check backend status
+  const checkBackend = useCallback(async () => {
+    try {
+      const res = await fetch(`${backendUrl}/api/status`, { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        setBackendOnline(data.online);
+      } else {
+        setBackendOnline(false);
+      }
+    } catch {
+      setBackendOnline(false);
+    }
+  }, [backendUrl]);
+
+  useEffect(() => {
+    checkBackend();
+  }, [checkBackend]);
+
+  const saveBackendUrl = (url: string) => {
+    setBackendUrl(url);
+    localStorage.setItem(BACKEND_URL_KEY, url);
+  };
+
   const handleStop = () => {
-    abortRef.current = true;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
   };
 
   const handleCrash = async () => {
-    if (!realmId.trim()) {
-      addLog("ERROR: Realm ID is required!", "error");
+    if (!realmInput.trim()) {
+      addLog("ERROR: Realm code or ID is required!", "error");
       return;
     }
 
-    abortRef.current = false;
+    if (!backendOnline) {
+      addLog("ERROR: Backend is offline. Check your backend URL in settings.", "error");
+      return;
+    }
+
     setIsRunning(true);
     setLogs([]);
 
-    addLog("Initializing crash sequence...", "info");
-    await delay(500);
-    if (abortRef.current) return stopSequence();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
-    addLog(`Connecting to Realm "${realmId}"...`, "info");
-    await delay(800);
-    if (abortRef.current) return stopSequence();
+    addLog("Connecting to backend...", "info");
 
-    addLog(`Joined Realm "${realmId}"`, "success");
-    await delay(300);
-    if (abortRef.current) return stopSequence();
+    try {
+      const url = `${backendUrl}/api/crash/start?realmInput=${encodeURIComponent(realmInput.trim())}&loops=${encodeURIComponent(crashLoop)}`;
+      const response = await fetch(url, { signal: controller.signal });
 
-    addLog(`Crash loop: ${crashLoop} iterations`, "info");
-    addLog(`Time delay: ${timeDelay}ms`, "info");
-    await delay(400);
-    if (abortRef.current) return stopSequence();
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: "Unknown error" }));
+        addLog(`Backend error: ${err.error}`, "error");
+        setIsRunning(false);
+        return;
+      }
 
-    const loops = parseInt(crashLoop) || 10;
-    const delayMs = parseInt(timeDelay) || 1000;
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
 
-    for (let i = 1; i <= loops; i++) {
-      if (abortRef.current) return stopSequence();
-      addLog(`Executing crash loop ${i}/${loops}...`, "warn");
-      await delay(delayMs / 3);
-      if (abortRef.current) return stopSequence();
-      addLog(`Payload delivered [loop ${i}]`, "success");
-      if (i < loops) await delay(delayMs / 2);
+      if (!reader) {
+        addLog("Failed to open log stream.", "error");
+        setIsRunning(false);
+        return;
+      }
+
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          if (line.startsWith("data: ")) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              addLog(data.text, data.type as LogEntry["type"]);
+            } catch {
+              // skip malformed
+            }
+          }
+        }
+      }
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        addLog("⚠ Crash sequence aborted by user.", "warn");
+      } else {
+        addLog(`Connection error: ${err.message}`, "error");
+      }
     }
 
-    await delay(500);
-    addLog("Crash sequence completed.", "success");
-    addLog(`Total iterations: ${loops}`, "info");
     setIsRunning(false);
-  };
-
-  const stopSequence = () => {
-    addLog("⚠ Crash sequence aborted by user.", "error");
-    setIsRunning(false);
-    abortRef.current = false;
+    abortControllerRef.current = null;
   };
 
   return (
@@ -78,13 +129,58 @@ const CrashPanel = () => {
       {/* Controls */}
       <div className="flex flex-col gap-4 w-full lg:w-80 shrink-0">
         <div className="rounded border border-border bg-card p-5 space-y-4">
-          <h2 className="font-display text-sm tracking-[0.2em] text-foreground text-glow uppercase">
-            Configuration
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="font-display text-sm tracking-[0.2em] text-foreground text-glow uppercase">
+              Configuration
+            </h2>
+            <button
+              onClick={() => setShowSettings(!showSettings)}
+              className="text-xs font-mono text-muted-foreground hover:text-foreground transition-colors"
+              title="Settings"
+            >
+              ⚙
+            </button>
+          </div>
 
-          <FieldInput label="Realm ID" value={realmId} onChange={setRealmId} placeholder="Enter realm ID..." />
-          <FieldInput label="Crash Loop" value={crashLoop} onChange={setCrashLoop} placeholder="10" />
-          <FieldInput label="Time Delay (ms)" value={timeDelay} onChange={setTimeDelay} placeholder="1000" />
+          {showSettings && (
+            <div className="space-y-1.5 p-3 rounded bg-secondary border border-border">
+              <label className="text-xs font-mono text-muted-foreground uppercase tracking-wider">
+                Backend URL
+              </label>
+              <input
+                type="text"
+                value={backendUrl}
+                onChange={(e) => saveBackendUrl(e.target.value)}
+                placeholder="http://localhost:3001"
+                className="w-full bg-input border border-border rounded px-3 py-2 text-sm font-mono text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring transition-all"
+              />
+              <div className="flex items-center gap-2 mt-2">
+                <div className={`w-1.5 h-1.5 rounded-full ${backendOnline ? "bg-primary" : backendOnline === false ? "bg-destructive" : "bg-muted-foreground"}`} />
+                <span className="text-xs font-mono text-muted-foreground">
+                  {backendOnline ? "Backend online" : backendOnline === false ? "Backend offline" : "Checking..."}
+                </span>
+                <button
+                  onClick={checkBackend}
+                  className="text-xs font-mono text-primary hover:underline ml-auto"
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+          )}
+
+          <FieldInput
+            label="Realm Code / ID"
+            value={realmInput}
+            onChange={setRealmInput}
+            placeholder="Enter realm code or ID..."
+          />
+          <FieldInput
+            label="Crash Loops"
+            value={crashLoop}
+            onChange={setCrashLoop}
+            placeholder="10"
+          />
 
           <div className="flex gap-2">
             <button
@@ -106,6 +202,14 @@ const CrashPanel = () => {
                 Stop
               </button>
             )}
+          </div>
+
+          {/* Backend status indicator */}
+          <div className="flex items-center gap-2">
+            <div className={`w-1.5 h-1.5 rounded-full ${backendOnline ? "bg-primary animate-pulse" : "bg-destructive"}`} />
+            <span className="text-xs font-mono text-muted-foreground">
+              {backendOnline ? "Backend connected" : "Backend disconnected"}
+            </span>
           </div>
         </div>
       </div>
@@ -142,7 +246,5 @@ const FieldInput = ({
     />
   </div>
 );
-
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export default CrashPanel;
